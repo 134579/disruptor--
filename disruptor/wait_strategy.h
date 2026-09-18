@@ -29,8 +29,10 @@
 #include <sys/time.h>
 
 #include <chrono>
-#include <thread>
 #include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "disruptor/sequence.h"

@@ -17,11 +17,6 @@ function set_travis_compiler {
 function prepare_build_dir {
   mkdir -p build
 
-  # custom build cmake in path
-  if [[ -e ${PWD}/cmake ]]; then
-    export PATH=${PWD}/cmake/bin:${PATH}
-  fi
-
   cd build
   cmake -DCOVERALLS=ON -DCOVERALLS_UPLOAD=ON -DCMAKE_BUILD_TYPE=Debug ..
 }

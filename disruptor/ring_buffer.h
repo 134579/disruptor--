@@ -27,6 +27,8 @@
 #define DISRUPTOR_RING_BUFFER_H_  // NOLINT
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include "utils.h"
 
 namespace disruptor {

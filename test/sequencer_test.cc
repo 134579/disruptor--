@@ -23,11 +23,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#define BOOST_TEST_DYN_LINK
+// do not define BOOST_TEST_DYN_LINK here, see cmake/all_dep.cmake
 #define BOOST_TEST_MODULE SequencerTest
-
-#include <atomic>
-#include <iostream>
 
 #include <boost/test/unit_test.hpp>
 

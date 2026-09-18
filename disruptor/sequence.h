@@ -34,7 +34,8 @@
 #define DISRUPTOR_SEQUENCE_H_  // NOLINT
 
 #include <atomic>
-
+#include <climits>
+#include <vector>
 #include "disruptor/utils.h"
 
 namespace disruptor {
@@ -89,7 +90,7 @@ class Sequence {
   DISALLOW_COPY_MOVE_AND_ASSIGN(Sequence);
 };
 
-int64_t GetMinimumSequence(const std::vector<Sequence*>& sequences) {
+inline int64_t GetMinimumSequence(const std::vector<Sequence*>& sequences) {
   int64_t minimum = LONG_MAX;
 
   for (Sequence* sequence_ : sequences) {

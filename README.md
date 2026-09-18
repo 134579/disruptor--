@@ -39,3 +39,20 @@ cache between build directories:
 ```
 # export CPM_SOURCE_CACHE=${HOME}/.cache/CPM
 ```
+
+Benchmarks
+----------
+
+`test/benchmark` holds two throughput benchmarks of the sequencer, they are
+built along with the test suite but are not registered with ctest. Both take an
+optional number of events as their first argument and default to 300 millions,
+so build in Release before reading anything into the numbers:
+
+```
+# ./build/one_publisher_to_one_unicast_throughput_test_bin
+# ./build/one_publisher_to_three_pipeline_throughput_test_bin 1000000
+```
+
+Each of them prints the checksum of the events it consumed, which has to be
+`events * (events - 1) / 2` (three times that for the pipeline). A different
+value means events were lost or processed twice.

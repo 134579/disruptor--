@@ -27,6 +27,7 @@
 #define DISRUPTOR_SEQUENCE_BARRIER_H_  // NOLINT
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "disruptor/wait_strategy.h"
@@ -34,12 +35,26 @@
 
 namespace disruptor {
 
+// Gates a consumer on the sequencer's cursor and on a set of dependents.
+//
+// The barrier can be neither copied nor assigned, but it has to be movable:
+// Sequencer::NewBarrier() returns it by value, and neither the wait strategies
+// nor the alerted flag can be copied.
 template <typename W = kDefaultWaitStrategy>
 class SequenceBarrier {
  public:
   SequenceBarrier(const Sequence& cursor,
                   const std::vector<Sequence*>& dependents)
       : cursor_(cursor), dependents_(dependents), alerted_(false) {}
+
+  // Every wait strategy shipped with the library is stateless, hence the
+  // default construction. A move only ever happens right after the barrier was
+  // built, so there is no state worth carrying over.
+  SequenceBarrier(SequenceBarrier&& other)
+      : wait_strategy_(),
+        cursor_(other.cursor_),
+        dependents_(std::move(other.dependents_)),
+        alerted_(other.alerted_.load()) {}
 
   int64_t WaitFor(const int64_t& sequence) {
     return wait_strategy_.WaitFor(sequence, cursor_, dependents_, alerted_);

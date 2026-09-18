@@ -12,10 +12,10 @@
 //       names of its contributors may be used to endorse or promote products
 //       derived from this software without specific prior written permission.
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-// ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL FRANÇOIS SAINT-JACQUES BE LIABLE FOR ANY
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL FRANÇOIS SAINT-JACQUES BE LIABLE FOR ANY
 // DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
 // (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
 // LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
@@ -25,101 +25,130 @@
 
 #include <sys/time.h>
 
-#include <exception>
-#include <functional>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <thread>
+#include <vector>
 
-#include <disruptor/ring_buffer.h>
-#include <disruptor/event_publisher.h>
-#include <disruptor/event_processor.h>
-#include <disruptor/exception_handler.h>
-
-#include "../test/support/stub_event.h"
+#include <disruptor/sequence.h>
+#include <disruptor/sequence_barrier.h>
+#include <disruptor/sequencer.h>
 
 using namespace disruptor;
 
-int main(int arc, char** argv) {
-    int buffer_size = 1024 * 8;
-    long iterations = 1000L * 1000L * 300;
+namespace {
 
-    test::StubEventFactory stub_factory;
-    RingBuffer<test::StubEvent> ring_buffer(&stub_factory,
-                                       buffer_size,
-                                       kSingleThreadedStrategy,
-                                       kBusySpinStrategy);
+// Payload carried through the ring. What is measured here is the cost of the
+// sequencing machinery around the event, not the event itself.
+struct StubEvent {
+  int64_t value;
+};
 
-    // one exception handler
-    IgnoreExceptionHandler<test::StubEvent> stub_exception_handler;
-    // one event handler
-    test::StubBatchHandler stub_handler;
+constexpr size_t kBufferSize = 1024 * 8;
+// 300M events, override with the first command line argument.
+constexpr int64_t kDefaultIterations = 1000L * 1000L * 300L;
 
-    std::vector<Sequence*> sequence_to_track(0);
+using BenchmarkSequencer =
+    Sequencer<StubEvent, kBufferSize, SingleThreadedStrategy<kBufferSize>,
+              kDefaultWaitStrategy>;
 
-    std::unique_ptr<ProcessingSequenceBarrier> first_barrier(
-        ring_buffer.NewBarrier(sequence_to_track));
-    BatchEventProcessor<test::StubEvent> first_processor(&ring_buffer,
-                                              (SequenceBarrierInterface*) first_barrier.get(),
-                                              &stub_handler,
-                                              &stub_exception_handler);
-
-    sequence_to_track.clear();
-    sequence_to_track.push_back(first_processor.GetSequence());
-
-    std::unique_ptr<ProcessingSequenceBarrier> second_barrier(
-        ring_buffer.NewBarrier(sequence_to_track));
-    BatchEventProcessor<test::StubEvent> second_processor(&ring_buffer,
-                                              (SequenceBarrierInterface*) second_barrier.get(),
-                                              &stub_handler,
-                                              &stub_exception_handler);
-    sequence_to_track.clear();
-    sequence_to_track.push_back(second_processor.GetSequence());
-
-    std::unique_ptr<ProcessingSequenceBarrier> third_barrier(
-        ring_buffer.NewBarrier(sequence_to_track));
-    BatchEventProcessor<test::StubEvent> third_processor(&ring_buffer,
-                                              (SequenceBarrierInterface*) third_barrier.get(),
-                                              &stub_handler,
-                                              &stub_exception_handler);
-
-
-    std::thread first_consumer(std::ref<BatchEventProcessor<test::StubEvent>>(first_processor));
-    std::thread second_consumer(std::ref<BatchEventProcessor<test::StubEvent>>(second_processor));
-    std::thread third_consumer(std::ref<BatchEventProcessor<test::StubEvent>>(third_processor));
-
-    struct timeval start_time, end_time;
-
-    gettimeofday(&start_time, NULL);
-
-    std::unique_ptr<test::StubEventTranslator> translator(new test::StubEventTranslator);
-    EventPublisher<test::StubEvent> publisher(&ring_buffer);
-    for (long i=0; i<iterations; i++) {
-        publisher.PublishEvent(translator.get());
-    }
-
-    long expected_sequence = ring_buffer.GetCursor();
-    while (third_processor.GetSequence()->sequence() < expected_sequence) {}
-
-    gettimeofday(&end_time, NULL);
-
-    double start, end;
-    start = start_time.tv_sec + ((double) start_time.tv_usec / 1000000);
-    end = end_time.tv_sec + ((double) end_time.tv_usec / 1000000);
-
-    std::cout.precision(15);
-    std::cout << "1P-3EP-PIPELINE performance: ";
-    std::cout << (iterations * 1.0) / (end - start)
-              << " ops/secs" << std::endl;
-
-    first_processor.Halt();
-    second_processor.Halt();
-    third_processor.Halt();
-
-    first_consumer.join();
-    second_consumer.join();
-    third_consumer.join();
-
-    return EXIT_SUCCESS;
+double Now() {
+  struct timeval time;
+  gettimeofday(&time, NULL);
+  return time.tv_sec + (static_cast<double>(time.tv_usec) / 1000000);
 }
 
+// One stage of the pipeline: it waits on its own barrier, walks every event of
+// the batch it was granted and finally publishes its own progress.
+void Consume(SequenceBarrier<kDefaultWaitStrategy>& barrier,
+             BenchmarkSequencer& sequencer, Sequence& stage_sequence,
+             const int64_t& last_sequence, int64_t* checksum) {
+  int64_t next = kFirstSequenceValue;
+  while (next <= last_sequence) {
+    const int64_t available = barrier.WaitFor(next);
+    if (available < next) continue;  // alerted, cannot happen here
+
+    for (int64_t sequence = next; sequence <= available; ++sequence) {
+      *checksum += sequencer[sequence].value;
+    }
+
+    stage_sequence.set_sequence(available);
+    next = available + 1;
+  }
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const int64_t iterations = argc > 1 ? std::atol(argv[1]) : kDefaultIterations;
+  // The last sequence that will ever be published, sequences start at 0.
+  const int64_t last_sequence = iterations - 1;
+
+  std::array<StubEvent, kBufferSize> events{};
+  BenchmarkSequencer sequencer(events);
+
+  Sequence first_sequence;
+  Sequence second_sequence;
+  Sequence third_sequence;
+
+  // Gating the publisher on the last stage is enough: a stage can only be at
+  // sequence S once every stage before it reached S, so third_sequence is
+  // already the minimum of the three.
+  sequencer.set_gating_sequences({&third_sequence});
+
+  // Each stage gates on the previous one, the first one gates on the cursor.
+  SequenceBarrier<kDefaultWaitStrategy> first_barrier =
+      sequencer.NewBarrier({});
+  SequenceBarrier<kDefaultWaitStrategy> second_barrier =
+      sequencer.NewBarrier({&first_sequence});
+  SequenceBarrier<kDefaultWaitStrategy> third_barrier =
+      sequencer.NewBarrier({&second_sequence});
+
+  int64_t first_checksum = 0;
+  int64_t second_checksum = 0;
+  int64_t third_checksum = 0;
+
+  std::thread first([&]() {
+    Consume(first_barrier, sequencer, first_sequence, last_sequence,
+            &first_checksum);
+  });
+  std::thread second([&]() {
+    Consume(second_barrier, sequencer, second_sequence, last_sequence,
+            &second_checksum);
+  });
+  std::thread third([&]() {
+    Consume(third_barrier, sequencer, third_sequence, last_sequence,
+            &third_checksum);
+  });
+
+  const double start = Now();
+
+  for (int64_t i = 0; i < iterations; ++i) {
+    const int64_t sequence = sequencer.Claim();
+    sequencer[sequence].value = sequence;
+    sequencer.Publish(sequence);
+  }
+
+  // Wait until the last stage caught up with the last published sequence.
+  while (third_sequence.sequence() < last_sequence) {
+  }
+
+  const double end = Now();
+
+  first.join();
+  second.join();
+  third.join();
+
+  std::cout.precision(15);
+  std::cout << "1P-3EP-PIPELINE performance: "
+            << (iterations * 1.0) / (end - start) << " ops/secs" << std::endl;
+  // Every stage sums 0..iterations-1, the total doubles as a proof that each
+  // event made it through all three of them exactly once.
+  std::cout << "  buffer size: " << kBufferSize << ", events: " << iterations
+            << ", checksum: "
+            << (first_checksum + second_checksum + third_checksum) << std::endl;
+
+  return EXIT_SUCCESS;
+}

@@ -96,4 +96,16 @@ if (BUILD_TESTING)
     target_link_libraries(${test_name}_bin PRIVATE disruptor Boost::unit_test_framework)
     add_test(NAME ${test_name} COMMAND ${test_name}_bin)
   endforeach ()
+
+  # Throughput benchmarks. They are plain programs taking an optional iteration
+  # count on the command line, and they run for tens of seconds with their
+  # default, so they are built but deliberately not registered with ctest.
+  set(DISRUPTOR_BENCHMARKS
+      one_publisher_to_one_unicast_throughput_test
+      one_publisher_to_three_pipeline_throughput_test)
+
+  foreach (benchmark_name IN LISTS DISRUPTOR_BENCHMARKS)
+    add_executable(${benchmark_name}_bin test/benchmark/${benchmark_name}.cc)
+    target_link_libraries(${benchmark_name}_bin PRIVATE disruptor)
+  endforeach ()
 endif ()
